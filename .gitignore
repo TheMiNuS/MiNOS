@@ -1,0 +1,32 @@
+# --- ESP-IDF build ---
+/build/
+/managed_components/
+/dependencies.lock
+/sdkconfig
+/sdkconfig.old
+/sdkconfig.*
+/CMakeCache.txt
+*.cmake
+
+# --- Certificats privés ---
+components/mn_web/certs/*.pem
+components/mn_web/certs/*.crt
+components/mn_web/certs/*.key
+
+# --- Fichiers utilisateur / système ---
+*.swp
+*.bak
+*.log
+*.DS_Store
+Thumbs.db
+
+# --- Backup ou temporaires ---
+*.tmp
+*.old
+*.orig
+
+# --- Fichiers générés par IDE ---
+.vscode/
+.idea/
+*.user
+*.workspace
