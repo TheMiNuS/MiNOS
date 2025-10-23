@@ -24,6 +24,7 @@ designed as a foundation for modular embedded projects.
 MiNOS/
 ├── main/                 → Entry point `app_main.cpp`
 ├── components/
+│   ├── example_demo/     → Demo with example on how to tweak Minos
 │   ├── mn_cfg/           → Persistent configuration management (NVS)
 │   ├── mn_wifi/          → STA/AP management, automatic rollback
 │   ├── mn_web/           → HTTPS Web Server, embedded HTML interface
