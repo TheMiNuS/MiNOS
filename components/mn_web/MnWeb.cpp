@@ -31,8 +31,6 @@ static std::string subst(const MnConfig& cfg, const std::string& var) {
     if (var=="mqtt_password")  return cfg.cfg.mqtt_password;
     if (var=="mqtt_host")      return cfg.cfg.mqtt_host;
     if (var=="mqtt_port")      { char b[8]; snprintf(b,8,"%u",cfg.cfg.mqtt_port); return b; }
-    if (var=="Sensitivity")    { char b[8]; snprintf(b,8,"%u",cfg.cfg.Sensitivity); return b; }
-    if (var=="Sensitivity_Volts"){ char b[32]; snprintf(b,32,"<p> Sensibility: %.3fV</p>", 3.3/255.0*cfg.cfg.Sensitivity); return b; }
     if (var=="CurrentTime") {
         time_t now = time(nullptr);
         struct tm tm_local;
@@ -163,13 +161,6 @@ static esp_err_t handle_module_cfg(httpd_req_t* req) {
     auto html = render_with_vars(HTML_MODULE_CONFIGURATION, self->config());
     return send_text(req, html, "text/html");
 }
-
-// static esp_err_t handle_debug(httpd_req_t* req) {
-    // auto* self = (MnWeb*) req->user_ctx;
-    // if (!check_basic_auth(req, self->config())) return ESP_OK;
-    // auto html = render_with_vars(HTML_DEBUG_INFORMATION, self->config());
-    // return send_text(req, html, "text/html");
-// }
 
 // ---------------------------------------------------------------------------
 // Wi-Fi configuration form handler (GET/POST)

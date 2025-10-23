@@ -16,5 +16,5 @@
 idf_component_register(SRCS "MnWeb.cpp"
                        INCLUDE_DIRS "."
                        REQUIRES esp_http_server esp_https_server mbedtls mn_cfg mn_wifi mn_time mn_ota esp_system esp_wifi examples_demo
-                       EMBED_TXTFILES "certs/cert.pem""certs/key.pem"
+                       EMBED_TXTFILES "certs/cert.pem" "certs/key.pem"
 )

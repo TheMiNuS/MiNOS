@@ -73,13 +73,6 @@ const char HTML_MODULE_CONFIGURATION[] =  R"(
                   <input type='text' id='hostname' name='hostname' value='%hostname%'>
               </div>
           </fieldset>
-          <fieldset>
-              <legend>ADSB Module Configuration</legend>
-              <div class='form-group'>
-                  <label for='Sensitivity'>ADSB Sensitivity:</label>
-                  <input type='text' id='Sensitivity' name='Sensitivity' value='%Sensitivity%'>
-              </div>
-          </fieldset>
           <div class='config-button-container'>
               <a href='/' class='button'>Go Back</a>
               <input type='submit' class='button' value='Save'>

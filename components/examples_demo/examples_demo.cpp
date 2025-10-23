@@ -76,27 +76,8 @@ std::string examples_mac_str() {
 }
 
 // ------------------------------------------------------------
-// Helpers: find netifs by ifkey or by ifkey-prefix
-// (Compatible with WIFI_STA_DEF / WIFI_AP_DEF and variations.)
+// Helper: convert IPv4 to string
 // ------------------------------------------------------------
-static esp_netif_t* find_netif_by_ifkey(const char* key) {
-    if (!key) return nullptr;
-    return esp_netif_get_handle_from_ifkey(key);
-}
-
-static esp_netif_t* find_first_netif_by_key_prefix(const char* prefix) {
-    if (!prefix) return nullptr;
-    size_t plen = std::strlen(prefix);
-    esp_netif_t* it = nullptr;
-    while ((it = esp_netif_next(it)) != nullptr) {
-        const char* key = esp_netif_get_ifkey(it);
-        if (key && std::strncmp(key, prefix, plen) == 0) {
-            return it;
-        }
-    }
-    return nullptr;
-}
-
 static void ip4_to_str(const esp_ip4_addr_t* a, char* out, size_t out_len) {
     if (!a) {
         std::strncpy(out, "-", out_len);
@@ -107,20 +88,58 @@ static void ip4_to_str(const esp_ip4_addr_t* a, char* out, size_t out_len) {
 }
 
 // ------------------------------------------------------------
+// Helpers: find netifs by ifkey or by ifkey-prefix (thread-safe)
+// ------------------------------------------------------------
+
+// Exact ifkey lookup (e.g., "WIFI_STA_DEF", "WIFI_AP_DEF")
+static esp_netif_t* find_netif_by_ifkey(const char* key) {
+    if (!key) return nullptr;
+    return esp_netif_get_handle_from_ifkey(key);
+}
+
+// Thread-safe iteration context
+struct find_ifkey_ctx {
+    const char*   prefix;
+    size_t        plen;
+    esp_netif_t*  result;
+};
+
+// Callback must return int to match esp_netif_callback_fn
+static int find_ifkey_cb(void* arg) {
+    auto* ctx = reinterpret_cast<find_ifkey_ctx*>(arg);
+    esp_netif_t* it = nullptr;
+    while ((it = esp_netif_next_unsafe(it)) != nullptr) {
+        const char* key = esp_netif_get_ifkey(it);
+        if (key && std::strncmp(key, ctx->prefix, ctx->plen) == 0) {
+            ctx->result = it;
+            break;
+        }
+    }
+    return 0; // success
+}
+
+// First netif whose ifkey starts with given prefix (e.g. "WIFI_STA", "WIFI_AP")
+static esp_netif_t* find_first_netif_by_key_prefix(const char* prefix) {
+    if (!prefix) return nullptr;
+    find_ifkey_ctx ctx{ prefix, std::strlen(prefix), nullptr };
+    (void)esp_netif_tcpip_exec(find_ifkey_cb, &ctx);
+    return ctx.result;
+}
+
+// ------------------------------------------------------------
 // Get IP configuration: prioritizes STA, falls back to AP.
-// Returns true on success and fills ip/mask/gw/dns strings.
 // ------------------------------------------------------------
 bool examples_ip_info(std::string& ip, std::string& mask, std::string& gw, std::string& dns) {
     esp_netif_t* nif = nullptr;
 
-    // Try usual STA keys first
+    // 1) try usual STA keys first
     nif = find_netif_by_ifkey("WIFI_STA_DEF");
     if (!nif) nif = find_netif_by_ifkey("WIFI_STA");
 
-    // Fallback: first netif whose key starts with "WIFI_STA"
+    // 2) fallback: first netif whose key starts with "WIFI_STA"
     if (!nif) nif = find_first_netif_by_key_prefix("WIFI_STA");
 
-    // If still nothing, try AP (useful for captive portal)
+    // 3) fallback: AP (useful when running captive portal)
     bool using_ap = false;
     if (!nif) {
         nif = find_netif_by_ifkey("WIFI_AP_DEF");
