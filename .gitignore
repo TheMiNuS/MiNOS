@@ -2,11 +2,11 @@
 /build/
 /managed_components/
 /dependencies.lock
-/sdkconfig
 /sdkconfig.old
-/sdkconfig.*
+/sdkconfig
 /CMakeCache.txt
 *.cmake
+.clangd
 
 # --- Certificats privés ---
 components/mn_web/certs/*.pem
