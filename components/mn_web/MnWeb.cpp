@@ -337,7 +337,7 @@ esp_err_t MnWeb::begin() {
     ssl.httpd = HTTPD_DEFAULT_CONFIG();
     ssl.httpd.uri_match_fn      = httpd_uri_match_wildcard;
     ssl.httpd.server_port       = 443;
-    ssl.httpd.max_open_sockets  = 4;
+    ssl.httpd.max_open_sockets  = 1;
     ssl.httpd.lru_purge_enable  = true;
     ssl.httpd.max_uri_handlers = 10;
 
