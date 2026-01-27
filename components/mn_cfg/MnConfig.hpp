@@ -8,7 +8,6 @@
 #include "esp_err.h"
 
 struct SystemConfig {
-    uint16_t FlashStatus;      // 0x5555 = init OK
     uint16_t WifiConfig;       // 0x5555 normal, 0xAAAA = update in test
     char wifi_ssid[32];
     char wifi_password[64];
@@ -23,6 +22,10 @@ struct SystemConfig {
     char mqtt_host[32];
     uint16_t mqtt_port;
     uint8_t Sensitivity;
+
+    // Below value need to stay placed here as if you extend or reduce the structure size
+    // it will naturally trigger an init of EEPROM as this variable will not be set to 0x5555
+    uint16_t FlashStatus;      // 0x5555 = init OK
 };
 
 class MnConfig {
