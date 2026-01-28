@@ -79,17 +79,47 @@ const char HTML_MODULE_CONFIGURATION[] =  R"(
           </div>
         </form>
 
-        <form method='POST' action='/doUpdate' enctype='multipart/form-data' class='config-form'>        
+        <form class='config-form' onsubmit='return false;'>
             <fieldset>
                 <legend>Firmware update</legend>
-                    <div class='form-group'>
-                        <input id='update' type='file' name='update'>
-                    </div>
-                    <div class='config-button-container'>
-                        <input type='submit' class='button' value='Firmware Update'>
-                    </div>
+                <div class='form-group'>
+                    <input id='update' type='file' accept='.bin,application/octet-stream'>
+                </div>
+                <div class='config-button-container'>
+                    <button type='button' class='button' onclick='mn_do_update()'>Firmware Update</button>
+                </div>
+                <div class='form-group'>
+                    <small id='update_status'>Select a .bin then click Firmware Update.</small>
+                </div>
             </fieldset>
         </form>
+
+        <script>
+        async function mn_do_update() {
+            const f = document.getElementById('update').files[0];
+            const st = document.getElementById('update_status');
+            if (!f) { st.textContent = 'No file selected.'; return; }
+
+            st.textContent = 'Uploading... do not close this page.';
+
+            try {
+                const res = await fetch('/doUpdate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body: f
+                });
+
+                const txt = await res.text().catch(() => '');
+                if (!res.ok) {
+                    st.textContent = 'Upload failed: HTTP ' + res.status + ' ' + txt;
+                    return;
+                }
+                st.textContent = 'Upload OK. Device is rebooting...';
+            } catch (e) {
+                st.textContent = 'Upload error: ' + (e && e.message ? e.message : e);
+            }
+        }
+        </script>
 
         <form method='POST' action='/factory-reset' enctype='multipart/form-data' class='config-form'>
             <fieldset>

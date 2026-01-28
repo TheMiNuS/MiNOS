@@ -14,6 +14,9 @@ class MnWeb {
 public:
     MnWeb(MnConfig& c, MnWiFi& w, MnTime& t, MnOta& o);
     esp_err_t begin();
+
+    // Re-use the same Basic Auth policy across all handlers (incl. OTA)
+    bool check_auth(httpd_req_t* req) const;
     inline MnConfig& config(){return m_cfg;}
     inline MnWiFi&  wifi()  {return m_wifi;}
     inline MnTime&  time()  {return m_time;}

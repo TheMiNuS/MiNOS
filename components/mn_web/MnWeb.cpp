@@ -141,6 +141,10 @@ static bool check_basic_auth(httpd_req_t* req, const MnConfig& cfg) {
     goto unauthorized;
 }
 
+bool MnWeb::check_auth(httpd_req_t* req) const {
+    return check_basic_auth(req, m_cfg);
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -337,9 +341,15 @@ esp_err_t MnWeb::begin() {
     ssl.httpd = HTTPD_DEFAULT_CONFIG();
     ssl.httpd.uri_match_fn      = httpd_uri_match_wildcard;
     ssl.httpd.server_port       = 443;
-    ssl.httpd.max_open_sockets  = 1;
+    // Browsers often open multiple parallel connections; TLS also costs more per socket.
+    // A too-low value tends to create handshake failures under load.
+    ssl.httpd.max_open_sockets  = 8;
     ssl.httpd.lru_purge_enable  = true;
     ssl.httpd.max_uri_handlers = 10;
+
+    // OTA uploads over TLS can be slow; give the server more breathing room.
+    ssl.httpd.recv_wait_timeout = 20;
+    ssl.httpd.send_wait_timeout = 20;
 
     // Embedded certificate and key
     ssl.servercert     = cert_pem_start;

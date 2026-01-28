@@ -9,11 +9,23 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+// OTA endpoint is registered by MnWeb with user_ctx = MnWeb*
+#include "MnWeb.hpp"
+
 #include <string>    // std::string
 #include <vector>    // std::vector
 #include <cstring>   // strlen, strstr, memcpy...
 
 esp_err_t MnOta::handle_upload(httpd_req_t* req) {
+    // Protect OTA: reuse the same Basic Auth policy as the web UI
+    if (req && req->user_ctx) {
+        auto* web = reinterpret_cast<MnWeb*>(req->user_ctx);
+        if (web && !web->check_auth(req)) {
+            // check_auth already sent 401
+            return ESP_OK;
+        }
+    }
+
     // Retrieve Content-Type to detect if it's multipart
     char ctype[128] = {0};
     httpd_req_get_hdr_value_str(req, "Content-Type", ctype, sizeof(ctype));
