@@ -1,0 +1,12 @@
+basicConstraints = CA:FALSE
+keyUsage = critical, digitalSignature
+extendedKeyUsage = serverAuth
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1  = MiNOS-DEV.lan
+DNS.2  = MiNOS-DEV.local
+DNS.3  = MiNOS-DEV.home.arpa
+IP.1   = 192.168.4.1

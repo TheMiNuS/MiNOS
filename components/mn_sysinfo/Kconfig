@@ -1,0 +1,8 @@
+menu "MiNOS - System infos"
+    config MINOS_SYSINFO_ENABLE
+        bool "Enable mn_sysinfo (System infos page)"
+        default n
+        help
+            Adds a /sysinfo page to the HTTPS server and a "System infos" button on the home page.
+            The feature is also gated at runtime via g_mn_sysinfo_runtime_enable.
+endmenu

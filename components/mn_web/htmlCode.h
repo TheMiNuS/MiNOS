@@ -9,7 +9,7 @@ const char HTML_ROOT[] =  R"(
         <head>
             <title>The MiNuS OS</title>
             <meta name='viewport' content='width=device-width, initial-scale=1'>
-            <meta http-equiv='refresh' content='5;url=/'>
+            <meta http-equiv='refresh' content='15;url=/'>
             <link rel="stylesheet" href="styles.css">
         </head>
         <body>
@@ -17,6 +17,7 @@ const char HTML_ROOT[] =  R"(
             <div class='home-button-container'>
                 <a class='button' href='/module-configuration'>Module Configuration</a>
                 <a class='button' href='/example'>Examples</a>
+                %SYSINFO_BTN%
                 <fieldset>
                     <legend>Status</legend>
                     <div class='form-group'>
@@ -240,6 +241,33 @@ const char HTML_EXEMPLE[] =  R"(
 
         <div class='config-button-container'>
           <a class='button' href='/'>Go Back</a>
+        </div>
+
+        %COPYRIGHT%
+    </body>
+  </html>
+)";
+
+const char HTML_SYSINFO[] =  R"(
+  <!DOCTYPE html>
+  <html>
+    <head>
+        <meta charset='UTF-8'>
+        <meta name='viewport' content='width=device-width, initial-scale=1'>
+        <meta http-equiv='refresh' content='10;url=/sysinfo'>
+        <title>System infos</title>
+        <link rel="stylesheet" href="styles.css">
+    </head>
+    <body>
+        <h1>System infos</h1>
+
+        <div class='config-details'>
+        %SYSINFO_BODY%
+        </div>
+
+
+        <div class='home-button-container'>
+            <a class='button' href='/'>Back to Home</a>
         </div>
 
         %COPYRIGHT%

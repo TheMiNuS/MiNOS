@@ -1,0 +1,10 @@
+menu "MiNOS Web"
+
+config MINOS_WEB_USE_HTTPS
+    bool "Use HTTPS server (TLS)"
+    default y
+    help
+        If enabled, MiNOS starts the HTTPS server (esp_https_server) on port 443.
+        If disabled, MiNOS starts the plain HTTP server (esp_http_server) on port 80.
+
+endmenu

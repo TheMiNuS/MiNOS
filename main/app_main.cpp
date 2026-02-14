@@ -13,6 +13,9 @@
 #include "MnTime.hpp"
 #include "MnWeb.hpp"
 #include "MnOta.hpp"
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+#include "MnSysInfo.h"
+#endif
 #include "examples_demo.hpp"
 
 static const char* TAG = "APP";
@@ -27,6 +30,10 @@ extern "C" void app_main(void) {
 
     MnConfig cfg;
     cfg.load_or_init();      // initialize defaults if needed
+
+    #ifdef CONFIG_MINOS_SYSINFO_ENABLE
+        mn_sysinfo_init();
+    #endif
 
     MnWiFi wifi(cfg);
     wifi.begin();            // AP fallback + STA test + staged commit

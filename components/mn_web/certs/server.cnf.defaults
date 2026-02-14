@@ -1,0 +1,19 @@
+[ req ]
+default_md = sha256
+prompt = no
+distinguished_name = dn
+req_extensions = req_ext
+
+[ dn ]
+CN = MiNOS-DEV.lan
+O  = MiNOS
+OU = LAN
+
+[ req_ext ]
+subjectAltName = @alt_names
+
+[ alt_names ]
+DNS.1  = MiNOS-DEV.lan
+DNS.2  = MiNOS-DEV.local
+DNS.3  = MiNOS-DEV.home.arpa
+IP.1   = 192.168.4.1

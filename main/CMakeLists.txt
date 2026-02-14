@@ -12,6 +12,7 @@ idf_component_register(
     mn_time
     mn_web
     mn_ota
+    mn_sysinfo
     nvs_flash
     esp_wifi
     esp_netif

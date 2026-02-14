@@ -6,13 +6,19 @@
 #include "MnWeb.hpp"
 #include "esp_log.h"
 #include "esp_http_server.h"
-#include "esp_https_server.h"
+#if CONFIG_MINOS_WEB_USE_HTTPS
+  #include "esp_https_server.h"
+#endif
 #include "mbedtls/base64.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "esp_mac.h"
 #include <string>
 #include <cstring>
+#include <ctime>
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+#include "MnSysInfo.h"
+#endif
 
 #include "htmlCode.h"  // HTML/CSS templates
 #include "examples_demo.hpp"
@@ -74,6 +80,22 @@ static std::string subst(const MnConfig& cfg, const std::string& var) {
         char b[16]; snprintf(b, sizeof b, "%d", examples_read_adc_mv());
         return b;
     }
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+    if (var=="SYSINFO_BTN") {
+        if (mn_sysinfo_is_enabled()) {
+            return "<a class='button' href='/sysinfo'>System infos</a>";
+        }
+        return std::string("");
+    }
+    if (var=="SYSINFO_BODY") {
+        char* body = mn_sysinfo_build_body_html();
+        std::string out = body ? body : "";
+        free(body);
+        return out;
+    }
+#endif
+
+
     return {};
 }
 
@@ -280,6 +302,25 @@ static esp_err_t handle_query_wifi(httpd_req_t* req) {
 }
 
 // ---------------------------------------------------------------------------
+// Sysinfo reset handler
+// ---------------------------------------------------------------------------
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+static esp_err_t handle_sysinfo(httpd_req_t* req) {
+    auto* self = (MnWeb*) req->user_ctx;
+    if (!check_basic_auth(req, self->config())) return ESP_OK;
+
+    if (!mn_sysinfo_is_enabled()) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "/");
+        return httpd_resp_send(req, NULL, 0);
+    }
+
+    auto html = render_with_vars(HTML_SYSINFO, self->config());
+    return send_text(req, html, "text/html");
+}
+#endif
+
+// ---------------------------------------------------------------------------
 // Factory reset handler
 // ---------------------------------------------------------------------------
 static esp_err_t handle_factory_reset(httpd_req_t* req) {
@@ -330,61 +371,91 @@ MnWeb::MnWeb(MnConfig& c, MnWiFi& w, MnTime& t, MnOta& o) : m_cfg(c), m_wifi(w),
 // ---------------------------------------------------------------------------
 // HTTPS server initialization
 // ---------------------------------------------------------------------------
-extern const uint8_t cert_pem_start[] asm("_binary_cert_pem_start");
-extern const uint8_t cert_pem_end[]   asm("_binary_cert_pem_end");
-extern const uint8_t key_pem_start[]  asm("_binary_key_pem_start");
-extern const uint8_t key_pem_end[]    asm("_binary_key_pem_end");
+#if CONFIG_MINOS_WEB_USE_HTTPS
+extern const unsigned char server_crt_start[] asm("_binary_server_crt_start");
+extern const unsigned char server_crt_end[]   asm("_binary_server_crt_end");
+extern const unsigned char server_key_start[] asm("_binary_server_key_start");
+extern const unsigned char server_key_end[]   asm("_binary_server_key_end");
+#endif
 
 esp_err_t MnWeb::begin() {
+
+    esp_err_t ret = ESP_FAIL;
+
+#if CONFIG_MINOS_WEB_USE_HTTPS
     // HTTPS Server (port 443)
     httpd_ssl_config_t ssl = HTTPD_SSL_CONFIG_DEFAULT();
     ssl.httpd = HTTPD_DEFAULT_CONFIG();
     ssl.httpd.uri_match_fn      = httpd_uri_match_wildcard;
     ssl.httpd.server_port       = 443;
-    // Browsers often open multiple parallel connections; TLS also costs more per socket.
-    // A too-low value tends to create handshake failures under load.
-    ssl.httpd.max_open_sockets  = 8;
+    ssl.httpd.max_open_sockets  = 2;
     ssl.httpd.lru_purge_enable  = true;
-    ssl.httpd.max_uri_handlers = 10;
+    ssl.httpd.max_uri_handlers  = 12;
 
-    // OTA uploads over TLS can be slow; give the server more breathing room.
     ssl.httpd.recv_wait_timeout = 20;
     ssl.httpd.send_wait_timeout = 20;
 
-    // Embedded certificate and key
-    ssl.servercert     = cert_pem_start;
-    ssl.servercert_len = cert_pem_end - cert_pem_start;
-    ssl.prvtkey_pem    = key_pem_start;
-    ssl.prvtkey_len    = key_pem_end - key_pem_start;
+    ssl.servercert     = server_crt_start;
+    ssl.servercert_len = server_crt_end - server_crt_start;
+    ssl.prvtkey_pem    = server_key_start;
+    ssl.prvtkey_len    = server_key_end - server_key_start;
 
-    esp_err_t ret = httpd_ssl_start(&server_, &ssl);
+    ret = httpd_ssl_start(&server_, &ssl);
     if (ret != ESP_OK) {
         ESP_LOGE("WEB", "HTTPS start failed (%d).", (int)ret);
+        return ESP_OK; // tu gardes ton comportement actuel
     }
-    else {
-        // HTTPS started successfully → register handlers
-        httpd_uri_t root  = { .uri="/", .method=HTTP_GET,  .handler=handle_root,  .user_ctx=this };
-        httpd_uri_t css   = { .uri="/styles.css", .method=HTTP_GET, .handler=handle_css, .user_ctx=this };
-        httpd_uri_t mod   = { .uri="/module-configuration", .method=HTTP_GET, .handler=handle_module_cfg, .user_ctx=this };
-        httpd_uri_t wifiu_get  = { .uri="/wifi", .method=HTTP_GET,  .handler=handle_query_wifi, .user_ctx=this };
-        httpd_uri_t wifiu_post = { .uri="/wifi", .method=HTTP_POST, .handler=handle_query_wifi, .user_ctx=this };
-        httpd_uri_t reb   = { .uri="/reboot", .method=HTTP_GET, .handler=handle_reboot, .user_ctx=this };
-        httpd_uri_t up    = { .uri="/doUpdate", .method=HTTP_POST, .handler=MnOta::handle_upload, .user_ctx=this };
-        httpd_uri_t frest = { .uri="/factory-reset", .method=HTTP_POST, .handler=handle_factory_reset, .user_ctx=this };
-        httpd_uri_t ex = {.uri="/example", .method=HTTP_GET,.handler=handle_example, .user_ctx=this };
+#else
+    // HTTP Server (port 80)
+    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+    cfg.uri_match_fn      = httpd_uri_match_wildcard;
+    cfg.server_port       = 80;
+    cfg.max_open_sockets  = 2;
+    cfg.lru_purge_enable  = true;
+    cfg.max_uri_handlers  = 12;
 
+    cfg.recv_wait_timeout = 20;
+    cfg.send_wait_timeout = 20;
 
-        httpd_register_uri_handler(server_, &root);
-        httpd_register_uri_handler(server_, &css);
-        httpd_register_uri_handler(server_, &mod);
-        httpd_register_uri_handler(server_, &wifiu_get);
-        httpd_register_uri_handler(server_, &wifiu_post);
-        httpd_register_uri_handler(server_, &reb);
-        httpd_register_uri_handler(server_, &up);
-        httpd_register_uri_handler(server_, &frest);
-        httpd_register_uri_handler(server_, &ex);
+    ret = httpd_start(&server_, &cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE("WEB", "HTTP start failed (%d).", (int)ret);
+        return ESP_OK; // tu gardes ton comportement actuel
     }
+#endif
+
+    // Server started successfully → register handlers (une seule fois)
+    register_handlers_();
 
     return ESP_OK;
 }
 
+void MnWeb::register_handlers_() {
+    httpd_uri_t root  = { .uri="/", .method=HTTP_GET,  .handler=handle_root,  .user_ctx=this };
+    httpd_uri_t css   = { .uri="/styles.css", .method=HTTP_GET, .handler=handle_css, .user_ctx=this };
+    httpd_uri_t mod   = { .uri="/module-configuration", .method=HTTP_GET, .handler=handle_module_cfg, .user_ctx=this };
+    httpd_uri_t wifiu_get  = { .uri="/wifi", .method=HTTP_GET,  .handler=handle_query_wifi, .user_ctx=this };
+    httpd_uri_t wifiu_post = { .uri="/wifi", .method=HTTP_POST, .handler=handle_query_wifi, .user_ctx=this };
+    httpd_uri_t reb   = { .uri="/reboot", .method=HTTP_GET, .handler=handle_reboot, .user_ctx=this };
+    httpd_uri_t up    = { .uri="/doUpdate", .method=HTTP_POST, .handler=MnOta::handle_upload, .user_ctx=this };
+    httpd_uri_t frest = { .uri="/factory-reset", .method=HTTP_POST, .handler=handle_factory_reset, .user_ctx=this };
+    httpd_uri_t ex    = { .uri="/example", .method=HTTP_GET, .handler=handle_example, .user_ctx=this };
+
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+    httpd_uri_t sysinfo = { .uri="/sysinfo", .method=HTTP_GET, .handler=handle_sysinfo, .user_ctx=this };
+#endif
+
+    httpd_register_uri_handler(server_, &root);
+    httpd_register_uri_handler(server_, &css);
+    httpd_register_uri_handler(server_, &mod);
+    httpd_register_uri_handler(server_, &wifiu_get);
+    httpd_register_uri_handler(server_, &wifiu_post);
+    httpd_register_uri_handler(server_, &reb);
+    httpd_register_uri_handler(server_, &up);
+    httpd_register_uri_handler(server_, &frest);
+    httpd_register_uri_handler(server_, &ex);
+
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+    httpd_register_uri_handler(server_, &sysinfo);
+#endif
+}

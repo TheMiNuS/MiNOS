@@ -24,4 +24,5 @@ public:
 private:
     MnConfig& m_cfg; MnWiFi& m_wifi; MnTime& m_time; MnOta& m_ota;
     httpd_handle_t server_{};
+    void register_handlers_();
 };

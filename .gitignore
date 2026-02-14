@@ -12,6 +12,12 @@
 components/mn_web/certs/*.pem
 components/mn_web/certs/*.crt
 components/mn_web/certs/*.key
+components/mn_web/certs/server.csr
+components/mn_web/certs/ca.srl
+components/mn_web/certs/ca.cnf
+components/mn_web/certs/server.cnf
+components/mn_web/certs/server_ext.cnf
+
 
 # --- Fichiers utilisateur / système ---
 *.swp
