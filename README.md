@@ -11,7 +11,8 @@ designed as a foundation for modular embedded projects.
 - ⚙️ **Wi-Fi STA / AP management** with auto-detection and intelligent rollback  
 - 💾 **Persistent configuration** stored in NVS  
 - ⏰ **NTP-based time synchronization**  
-- 🔄 **OTA firmware update** via web interface  
+- 🔄 **OTA firmware update** via web interface
+- 🔄 **System Informations** via web interface  
 - 🧩 **Class-oriented structure** (`MnWiFi`, `MnWeb`, `MnConfig`, `MnOta`, `MnTime`)  
 - 📄 License: [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/)  
   *(Free to use and modify, commercial use prohibited.)*
@@ -31,7 +32,8 @@ MiNOS/
 │   │   ├── certs/        → HTTPS certificates (not versioned)
 │   │   └── htmlCode.h    → Embedded HTML/CSS code
 │   ├── mn_ota/           → OTA update via `/doUpdate`
-│   └── mn_time/          → NTP synchronization
+│   |── mn_time/          → NTP synchronization
+|   └── mn_sysinfo/       → System Information page.
 ├── partitions.csv        → Custom partition table
 ├── sdkconfig.defaults    → Default build configuration
 ├── CMakeLists.txt        → Global CMake configuration
