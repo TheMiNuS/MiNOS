@@ -13,7 +13,7 @@ OU = LAN
 subjectAltName = @alt_names
 
 [ alt_names ]
-DNS.1  = MiNOS-DEV.lan
-DNS.2  = MiNOS-DEV.local
-DNS.3  = MiNOS-DEV.home.arpa
+DNS.1  = minos-dev.lan
+DNS.2  = minos-dev.local
+DNS.3  = minos-dev.home.arpa
 IP.1   = 192.168.4.1

@@ -390,7 +390,7 @@ esp_err_t MnWeb::begin() {
     ssl.httpd.server_port       = 443;
     ssl.httpd.max_open_sockets  = 2;
     ssl.httpd.lru_purge_enable  = true;
-    ssl.httpd.max_uri_handlers  = 12;
+    ssl.httpd.max_uri_handlers  = 16;
 
     ssl.httpd.recv_wait_timeout = 20;
     ssl.httpd.send_wait_timeout = 20;
