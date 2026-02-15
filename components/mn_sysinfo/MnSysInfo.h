@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,6 +26,14 @@ void mn_sysinfo_set_enabled(bool enable);
 
 /** Enable/disable task during boot */
 void mn_sysinfo_init(void);
+
+typedef esp_err_t (*mn_sysinfo_write_cb_t)(void* ctx, const char* data, size_t len);
+
+/**
+ * Stream the HTML body for /sysinfo without building the whole page in RAM.
+ * The callback will be called multiple times with chunks to send.
+ */
+esp_err_t mn_sysinfo_stream_body_html(void* ctx, mn_sysinfo_write_cb_t write_cb);
 
 
 /**

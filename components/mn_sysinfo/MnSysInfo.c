@@ -141,20 +141,6 @@ static void chip_info_to_str(char* out, size_t out_len) {
              model, info.revision, info.cores, feats[0] ? feats : "-");
 }
 
-static char* make_task_list(void) {
-#if (CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS)
-    UBaseType_t n = uxTaskGetNumberOfTasks();
-    size_t sz = (size_t)n * 96 + 256;
-    char* buf = (char*)malloc(sz);
-    if (!buf) return NULL;
-    memset(buf, 0, sz);
-    vTaskList(buf);
-    return buf;
-#else
-    return NULL;
-#endif
-}
-
 /* --------------- Keep (not shown in HTML anymore): raw runtime stats -------- */
 static __attribute__((unused)) char* make_runtime_stats(void) {
 #if (CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS && CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS)
@@ -254,26 +240,45 @@ static void mn_cpu_monitor_task(void* arg) {
     const TickType_t period = pdMS_TO_TICKS(1000);
     TickType_t last_wake = xTaskGetTickCount();
 
+    static TaskStatus_t* st = NULL;
+    static UBaseType_t   st_cap = 0;
+
     for (;;) {
         vTaskDelayUntil(&last_wake, period);
 
-        // If runtime disable is set, keep the task alive but skip heavy work
+        // runtime disable: keep task alive but skip heavy work
         if (!mn_sysinfo_is_enabled()) {
             continue;
         }
 
         UBaseType_t n = uxTaskGetNumberOfTasks();
-        TaskStatus_t* st = (TaskStatus_t*)malloc(sizeof(TaskStatus_t) * n);
-        if (!st) continue;
+
+        // Ensure capacity with some headroom to avoid frequent realloc
+        if (n > st_cap) {
+            UBaseType_t new_cap = (st_cap == 0) ? (n + 8) : st_cap;
+            while (new_cap < n) new_cap = (UBaseType_t)(new_cap * 2);
+
+            TaskStatus_t* ns = (TaskStatus_t*)realloc(st, sizeof(TaskStatus_t) * new_cap);
+            if (!ns) {
+                // if we can’t allocate, skip this round (don’t destroy old buffer)
+                continue;
+            }
+            st = ns;
+            st_cap = new_cap;
+        }
 
         uint32_t total_now = 0;
         UBaseType_t got = uxTaskGetSystemState(st, n, &total_now);
         uint64_t now_us = (uint64_t)esp_timer_get_time();
-        if (got == 0) { free(st); continue; }
+        if (got == 0) {
+            continue;
+        }
 
         if (!s_mon_mtx) {
             s_mon_mtx = xSemaphoreCreateMutex();
-            if (!s_mon_mtx) { free(st); continue; }
+            if (!s_mon_mtx) {
+                continue;
+            }
         }
 
         xSemaphoreTake(s_mon_mtx, portMAX_DELAY);
@@ -298,21 +303,18 @@ static void mn_cpu_monitor_task(void* arg) {
 
             s_mon.ready = true;
             xSemaphoreGive(s_mon_mtx);
-            free(st);
             continue;
         }
 
         uint32_t d_total = u32_delta(total_now, s_mon.last_total);
         if (d_total == 0) d_total = 1;
 
-        // global denom = per-core base * number of processors
         double denom_global = (double)d_total;
 #if (portNUM_PROCESSORS > 1)
         denom_global *= (double)portNUM_PROCESSORS;
 #endif
         if (denom_global <= 0.0) denom_global = 1.0;
 
-        // We'll compute idle deltas to get global/core loads
         uint32_t d_idle0 = 0, d_idle1 = 0;
 
         for (UBaseType_t i = 0; i < got; ++i) {
@@ -335,7 +337,6 @@ static void mn_cpu_monitor_task(void* arg) {
             e->stack_hwm = st[i].usStackHighWaterMark;
 
 #if (portNUM_PROCESSORS > 1) && defined(configUSE_CORE_AFFINITY) && (configUSE_CORE_AFFINITY == 1)
-            // IDF 5.5 SMP: signature is UBaseType_t vTaskCoreAffinityGet(ConstTaskHandle_t)
             e->affinity_mask = vTaskCoreAffinityGet(st[i].xHandle);
 #else
             e->affinity_mask = 0;
@@ -345,7 +346,6 @@ static void mn_cpu_monitor_task(void* arg) {
             if (strcmp(e->name, "IDLE1") == 0) d_idle1 = d_rt;
         }
 
-        // Global load
         double idle_pct_global = 0.0;
 #if (portNUM_PROCESSORS > 1)
         idle_pct_global = 100.0 * ((double)d_idle0 + (double)d_idle1) / denom_global;
@@ -362,14 +362,12 @@ static void mn_cpu_monitor_task(void* arg) {
         s_mon.global_avg5m = ema_update(s_mon.global_avg5m, s_mon.global_inst, dt_s, 300.0f);
 
 #if (portNUM_PROCESSORS > 1)
-        // per-core approx: load = 100 - idle/core
         double c0 = 100.0 - (100.0 * (double)d_idle0 / (double)d_total);
         double c1 = 100.0 - (100.0 * (double)d_idle1 / (double)d_total);
-        if (c0 < 0.0) { c0 = 0.0; }
-        if (c0 > 100.0) { c0 = 100.0; }
-
-        if (c1 < 0.0) { c1 = 0.0; }
-        if (c1 > 100.0) { c1 = 100.0; }
+        if (c0 < 0.0) c0 = 0.0;
+        if (c0 > 100.0) c0 = 100.0;
+        if (c1 < 0.0) c1 = 0.0;
+        if (c1 > 100.0) c1 = 100.0;
         s_mon.core0_inst = (float)c0;
         s_mon.core1_inst = (float)c1;
 #endif
@@ -378,9 +376,9 @@ static void mn_cpu_monitor_task(void* arg) {
         s_mon.last_us = now_us;
 
         xSemaphoreGive(s_mon_mtx);
-        free(st);
     }
 }
+
 
 static void mn_cpu_monitor_ensure_started(void) {
     if (s_mon_task) return;
@@ -472,6 +470,17 @@ static bool append_interrupts(mn_strbuf_t* sb) {
     sb_append(sb, "<fieldset><legend>Interrupts</legend><div class='form-group'>");
 
 #if __has_include("esp_intr_alloc.h")
+    // Avoid big heap spikes when memory is already fragmented / low
+    size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (big < 16 * 1024) {
+        sb_appendf(sb,
+                   "<p>Skipped (largest free block too small: %u bytes). "
+                   "This dump can allocate a lot; try again when RAM is freer.</p>",
+                   (unsigned)big);
+        sb_append(sb, "</div></fieldset>");
+        return true;
+    }
+
     char* mem = NULL;
     size_t mem_sz = 0;
     FILE* f = open_memstream(&mem, &mem_sz);
@@ -489,6 +498,13 @@ static bool append_interrupts(mn_strbuf_t* sb) {
     }
 
     if (mem && mem_sz) {
+        // Optional: cap output to keep HTML size reasonable
+        const size_t CAP = 8 * 1024;
+        if (mem_sz > CAP) {
+            mem_sz = CAP;
+            sb_append(sb, "<p>(truncated to 8KB)</p>");
+        }
+
         sb_append(sb, "<pre>");
         for (size_t i = 0; i < mem_sz; ++i) {
             char c = mem[i];
@@ -505,6 +521,7 @@ static bool append_interrupts(mn_strbuf_t* sb) {
     } else {
         sb_append(sb, "<p>No interrupt information returned.</p>");
     }
+
     free(mem);
 #else
     sb_append(sb, "<p>Interrupt dump not available (esp_intr_alloc.h not present).</p>");
@@ -512,6 +529,60 @@ static bool append_interrupts(mn_strbuf_t* sb) {
 
     sb_append(sb, "</div></fieldset>");
     return true;
+}
+
+/* ----------------------------- vtasklist dump ---------------------------- */
+
+static bool append_vtasklist(mn_strbuf_t* sb) {
+#if (CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS)
+    static char*  buf = NULL;
+    static size_t cap = 0;
+
+
+    UBaseType_t n = uxTaskGetNumberOfTasks();
+    size_t need = (size_t)n * 96 + 256;
+    if (need < 1024) need = 1024;
+
+
+    if (need > cap) {
+        size_t ncap = (cap == 0) ? need : cap;
+        while (ncap < need) ncap *= 2;
+
+
+        char* nb = (char*)realloc(buf, ncap);
+        if (!nb) return false;
+        buf = nb;
+        cap = ncap;
+    }
+
+
+    memset(buf, 0, cap);
+    vTaskList(buf);
+
+
+    sb_append(sb, "<fieldset><legend>vTaskList()</legend><div class='form-group'>");
+    sb_append(sb, "<p>Columns: Name | State (R=Ready, B=Blocked, S=Suspended, D=Deleted, X/R=Running) | Prio | Stack(HWM) | Num</p>");
+    sb_append(sb, "<pre>");
+
+
+    for (char* p = buf; *p; ++p) {
+        if (*p == '<') sb_append(sb, "&lt;");
+        else if (*p == '>') sb_append(sb, "&gt;");
+        else if (*p == '&') sb_append(sb, "&amp;");
+        else {
+            if (!sb_reserve(sb, 1)) break;
+            sb->buf[sb->len++] = *p;
+            sb->buf[sb->len] = 0;
+        }
+    }
+
+
+    sb_append(sb, "</pre></div></fieldset>");
+    return true;
+#else
+    (void)sb;
+    return true;
+#endif
 }
 
 /* ------------------------------- main builder ------------------------------ */
@@ -524,7 +595,9 @@ char* mn_sysinfo_build_body_html(void) {
         return out;
     }
 
-    mn_strbuf_t sb = {0};
+    //mn_strbuf_t sb = {0}; //Can eat a lot of memory.
+    mn_strbuf_t sb;
+    sb_reserve(&sb, 4096);
 
     // Chip info
     char chip[256];
@@ -570,26 +643,7 @@ char* mn_sysinfo_build_body_html(void) {
 
     // vTaskList
 #if (CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS)
-    char* tlist = make_task_list();
-    sb_append(&sb, "<fieldset><legend>vTaskList()</legend><div class='form-group'>");
-    sb_append(&sb, "<p>Columns: Name | State (R=Ready, B=Blocked, S=Suspended, D=Deleted, X/R=Running) | Prio | Stack(HWM) | Num</p>");
-    sb_append(&sb, "<pre>");
-    if (tlist) {
-        for (char* p = tlist; *p; ++p) {
-            if (*p == '<') sb_append(&sb, "&lt;");
-            else if (*p == '>') sb_append(&sb, "&gt;");
-            else if (*p == '&') sb_append(&sb, "&amp;");
-            else {
-                sb_reserve(&sb, 1);
-                sb.buf[sb.len++] = *p;
-                sb.buf[sb.len] = 0;
-            }
-        }
-        free(tlist);
-    } else {
-        sb_append(&sb, "Allocation failed.");
-    }
-    sb_append(&sb, "</pre></div></fieldset>");
+    append_vtasklist(&sb);
 #else
     sb_append(&sb, "<fieldset><legend>vTaskList()</legend><div class='form-group'>"
                    "<p>Disabled. Enable CONFIG_FREERTOS_USE_TRACE_FACILITY and "
@@ -607,6 +661,339 @@ char* mn_sysinfo_build_body_html(void) {
     if (!sb.buf) return NULL;
     return sb.buf;
 }
+
+/* ------------------------------ Chunked/streaming HTML builder (no big malloc for the whole page) ------------------------------ */
+
+typedef struct {
+    char* buf;
+    size_t len;
+    size_t cap;
+    void* ctx;
+    mn_sysinfo_write_cb_t cb;
+    esp_err_t last_err;
+} mn_streambuf_t;
+
+static bool sbw_flush(mn_streambuf_t* w) {
+    if (!w || !w->cb) return false;
+    if (w->last_err != ESP_OK) return false;
+    if (w->len == 0) return true;
+
+    w->last_err = w->cb(w->ctx, w->buf, w->len);
+    w->len = 0;
+    return (w->last_err == ESP_OK);
+}
+
+static bool sbw_append_n(mn_streambuf_t* w, const char* s, size_t n) {
+    if (!w || !s || n == 0) return true;
+    if (w->last_err != ESP_OK) return false;
+
+    // If chunk bigger than our buffer, flush current and send directly
+    if (n >= w->cap) {
+        if (!sbw_flush(w)) return false;
+        w->last_err = w->cb(w->ctx, s, n);
+        return (w->last_err == ESP_OK);
+    }
+
+    if (w->len + n > w->cap) {
+        if (!sbw_flush(w)) return false;
+    }
+
+    memcpy(w->buf + w->len, s, n);
+    w->len += n;
+    return true;
+}
+
+static bool sbw_append(mn_streambuf_t* w, const char* s) {
+    if (!s) return true;
+    return sbw_append_n(w, s, strlen(s));
+}
+
+static bool sbw_appendf(mn_streambuf_t* w, const char* fmt, ...) {
+    if (!w || !fmt) return false;
+    if (w->last_err != ESP_OK) return false;
+
+    char tmp[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+
+    if (n < 0) return false;
+
+    // If truncated, fall back to two-pass into direct send (rare here)
+    if ((size_t)n >= sizeof(tmp)) {
+        // Two-pass: allocate only for this big format (should be extremely rare)
+        char* big = (char*)malloc((size_t)n + 1);
+        if (!big) return false;
+        va_start(ap, fmt);
+        vsnprintf(big, (size_t)n + 1, fmt, ap);
+        va_end(ap);
+        bool ok = sbw_append_n(w, big, (size_t)n);
+        free(big);
+        return ok;
+    }
+
+    return sbw_append_n(w, tmp, (size_t)n);
+}
+
+static bool sbw_putc(mn_streambuf_t* w, char c) {
+    if (!w) return false;
+    if (w->last_err != ESP_OK) return false;
+    if (w->len + 1 > w->cap) {
+        if (!sbw_flush(w)) return false;
+    }
+    w->buf[w->len++] = c;
+    return true;
+}
+
+static bool sbw_append_html_escape_pre(mn_streambuf_t* w, const char* s) {
+    if (!w || !s) return true;
+    for (const char* p = s; *p; ++p) {
+        if (*p == '<') { if (!sbw_append(w, "&lt;")) return false; }
+        else if (*p == '>') { if (!sbw_append(w, "&gt;")) return false; }
+        else if (*p == '&') { if (!sbw_append(w, "&amp;")) return false; }
+        else { if (!sbw_putc(w, *p)) return false; }
+    }
+    return true;
+}
+
+#if (CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS)
+static bool stream_cpu_load(mn_streambuf_t* w) {
+    mn_cpu_monitor_ensure_started();
+    if (!s_mon_mtx) return true;
+
+    xSemaphoreTake(s_mon_mtx, portMAX_DELAY);
+
+    if (!s_mon.ready) {
+        xSemaphoreGive(s_mon_mtx);
+        sbw_append(w, "<fieldset><legend>CPU usage</legend><div class='form-group'>");
+        sbw_append(w, "<p>Warming up… refresh in a few seconds.</p>");
+        sbw_append(w, "</div></fieldset>");
+        return true;
+    }
+
+    sbw_append(w, "<fieldset><legend>CPU usage</legend><div class='form-group'><pre>");
+    sbw_appendf(w, "Instant : %.1f %%\n", s_mon.global_inst);
+    sbw_appendf(w, "Avg 5s  : %.1f %%\n", s_mon.global_avg5s);
+    sbw_appendf(w, "Avg 1m  : %.1f %%\n", s_mon.global_avg1m);
+    sbw_appendf(w, "Avg 5m  : %.1f %%\n", s_mon.global_avg5m);
+
+#if (portNUM_PROCESSORS > 1)
+    sbw_appendf(w, "\nCore 0 (inst): %.1f %%\n", s_mon.core0_inst);
+    sbw_appendf(w, "Core 1 (inst): %.1f %%\n", s_mon.core1_inst);
+#endif
+    sbw_append(w, "</pre></div></fieldset>");
+
+    sbw_append(w, "<fieldset><legend>CPU per task</legend><div class='form-group'>");
+    sbw_append(w, "<p>Columns: Name | Prio | Stack(HWM) | Core(allowed) | CPU% (inst/5s/1m/5m)</p>");
+    sbw_append(w, "<pre>");
+    sbw_append(w, "Task                          Prio Stack  Core     Inst   5sAvg  1mAvg  5mAvg\n");
+    sbw_append(w, "--------------------------------------------------------------------------------\n");
+
+    for (size_t i = 0; i < s_mon.tasks_len; ++i) {
+        mn_task_cpu_t* e = &s_mon.tasks[i];
+
+        char core_allowed[12] = "Any";
+#if (portNUM_PROCESSORS > 1) && defined(configUSE_CORE_AFFINITY) && (configUSE_CORE_AFFINITY == 1)
+        UBaseType_t m = e->affinity_mask;
+        if (m == 1) strncpy(core_allowed, "0", sizeof(core_allowed));
+        else if (m == 2) strncpy(core_allowed, "1", sizeof(core_allowed));
+        else if (m == 3) strncpy(core_allowed, "0|1", sizeof(core_allowed));
+        else snprintf(core_allowed, sizeof(core_allowed), "0x%X", (unsigned)m);
+#endif
+        core_allowed[sizeof(core_allowed) - 1] = 0;
+
+        sbw_appendf(w, "%-28s  %2u  %5u  %-7s %6.1f %6.1f %6.1f %6.1f\n",
+                    e->name,
+                    (unsigned)e->prio,
+                    (unsigned)e->stack_hwm,
+                    core_allowed,
+                    e->inst, e->avg5s, e->avg1m, e->avg5m);
+    }
+
+    sbw_append(w, "</pre></div></fieldset>");
+
+    xSemaphoreGive(s_mon_mtx);
+    return true;
+}
+#else
+static bool stream_cpu_load(mn_streambuf_t* w) { (void)w; return true; }
+#endif
+
+static bool stream_interrupts(mn_streambuf_t* w) {
+    sbw_append(w, "<fieldset><legend>Interrupts</legend><div class='form-group'>");
+
+#if __has_include("esp_intr_alloc.h")
+    // Guard: avoid heap spikes if RAM is already fragmented/low
+    size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    if (big < 16 * 1024) {
+        sbw_appendf(w,
+                    "<p>Skipped (largest free block too small: %u bytes). "
+                    "This dump can allocate a lot; try again when RAM is freer.</p>",
+                    (unsigned)big);
+        sbw_append(w, "</div></fieldset>");
+        return true;
+    }
+
+    char* mem = NULL;
+    size_t mem_sz = 0;
+    FILE* f = open_memstream(&mem, &mem_sz);
+    if (!f) {
+        sbw_append(w, "<p>open_memstream() not available, cannot capture interrupt dump.</p>");
+        sbw_append(w, "</div></fieldset>");
+        return true;
+    }
+
+    esp_err_t err = esp_intr_dump(f);
+    fclose(f);
+
+    if (err != ESP_OK) {
+        sbw_appendf(w, "<p>esp_intr_dump() failed: %d</p>", (int)err);
+    }
+
+    if (mem && mem_sz) {
+        // optional cap to prevent huge HTML
+        const size_t CAP = 8 * 1024;
+        if (mem_sz > CAP) {
+            mem_sz = CAP;
+            sbw_append(w, "<p>(truncated to 8KB)</p>");
+        }
+
+        sbw_append(w, "<pre>");
+        // escape as we stream
+        for (size_t i = 0; i < mem_sz; ++i) {
+            char c = mem[i];
+            if (c == '<') sbw_append(w, "&lt;");
+            else if (c == '>') sbw_append(w, "&gt;");
+            else if (c == '&') sbw_append(w, "&amp;");
+            else sbw_putc(w, c);
+        }
+        sbw_append(w, "</pre>");
+    } else {
+        sbw_append(w, "<p>No interrupt information returned.</p>");
+    }
+
+    free(mem);
+#else
+    sbw_append(w, "<p>Interrupt dump not available (esp_intr_alloc.h not present).</p>");
+#endif
+
+    sbw_append(w, "</div></fieldset>");
+    return true;
+}
+
+esp_err_t mn_sysinfo_stream_body_html(void* ctx, mn_sysinfo_write_cb_t write_cb) {
+    if (!write_cb) return ESP_ERR_INVALID_ARG;
+
+    if (!mn_sysinfo_is_enabled()) {
+        write_cb(ctx, "<p>System infos disabled.</p>", strlen("<p>System infos disabled.</p>"));
+        return ESP_OK;
+    }
+
+    // Small heap buffer (per request), avoids building the full HTML
+    const size_t CAP = 2048;
+    mn_streambuf_t w = {
+        .buf = (char*)heap_caps_malloc(CAP, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        .len = 0,
+        .cap = CAP,
+        .ctx = ctx,
+        .cb  = write_cb,
+        .last_err = ESP_OK
+    };
+
+    if (!w.buf) return ESP_ERR_NO_MEM;
+
+    // Chip info
+    char chip[256];
+    chip_info_to_str(chip, sizeof(chip));
+    sbw_append(&w, "<fieldset><legend>Chip</legend><div class='form-group'><pre>");
+    sbw_append_html_escape_pre(&w, chip);
+    sbw_append(&w, "</pre></div></fieldset>");
+
+    // System info
+    int core = xPortGetCoreID();
+    int64_t us = esp_timer_get_time();
+
+    uint64_t total_sec = (uint64_t)(us / 1000000ULL);
+    uint32_t days      = (uint32_t)(total_sec / 86400ULL);
+    uint32_t hours     = (uint32_t)((total_sec % 86400ULL) / 3600ULL);
+    uint32_t minutes   = (uint32_t)((total_sec % 3600ULL) / 60ULL);
+    uint32_t seconds   = (uint32_t)(total_sec % 60ULL);
+
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+
+    size_t heap_free = esp_get_free_heap_size();
+    size_t heap_min  = esp_get_minimum_free_heap_size();
+    size_t heap_big  = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+
+    sbw_append(&w, "<fieldset><legend>System</legend><div class='form-group'><pre>");
+    sbw_appendf(&w, "Device ID (MAC): %02X:%02X:%02X:%02X:%02X:%02X\n",
+                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    sbw_appendf(&w, "Current core: %d\n", core);
+    sbw_appendf(&w, "Uptime: %u day%s %02u:%02u:%02u (%" PRId64 " us)\n",
+                days, (days > 1) ? "s" : "", hours, minutes, seconds, us);
+    sbw_appendf(&w, "Heap free: %u bytes\n", (unsigned)heap_free);
+    sbw_appendf(&w, "Heap min free: %u bytes\n", (unsigned)heap_min);
+    sbw_appendf(&w, "Largest free block: %u bytes\n", (unsigned)heap_big);
+    sbw_append(&w, "</pre></div></fieldset>");
+
+    // FreeRTOS count
+    UBaseType_t nt = uxTaskGetNumberOfTasks();
+    sbw_append(&w, "<fieldset><legend>FreeRTOS</legend><div class='form-group'>");
+    sbw_appendf(&w, "<p>Number of tasks: %u</p>", (unsigned)nt);
+    sbw_append(&w, "</div></fieldset>");
+
+    // vTaskList() (uses a persistent buffer to avoid malloc every request)
+#if (CONFIG_FREERTOS_USE_TRACE_FACILITY && CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS)
+    static char* tbuf = NULL;
+    static size_t tcap = 0;
+
+    size_t need = (size_t)nt * 96 + 256;
+    if (need < 1024) need = 1024;
+
+    if (need > tcap) {
+        size_t ncap = (tcap == 0) ? need : tcap;
+        while (ncap < need) ncap *= 2;
+        char* nb = (char*)realloc(tbuf, ncap);
+        if (nb) { tbuf = nb; tcap = ncap; }
+    }
+
+    sbw_append(&w, "<fieldset><legend>vTaskList()</legend><div class='form-group'>");
+    sbw_append(&w, "<p>Columns: Name | State (R=Ready, B=Blocked, S=Suspended, D=Deleted, X/R=Running) | Prio | Stack(HWM) | Num</p>");
+    sbw_append(&w, "<pre>");
+
+    if (tbuf && tcap) {
+        memset(tbuf, 0, tcap);
+        vTaskList(tbuf);
+        sbw_append_html_escape_pre(&w, tbuf);
+    } else {
+        sbw_append(&w, "Allocation failed.");
+    }
+    sbw_append(&w, "</pre></div></fieldset>");
+#else
+    sbw_append(&w, "<fieldset><legend>vTaskList()</legend><div class='form-group'>"
+                   "<p>Disabled. Enable CONFIG_FREERTOS_USE_TRACE_FACILITY and "
+                   "CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS.</p>"
+                   "</div></fieldset>");
+#endif
+
+    // CPU usage (EMA monitor)
+    stream_cpu_load(&w);
+
+    // Interrupts
+    stream_interrupts(&w);
+
+    // Flush and cleanup
+    sbw_flush(&w);
+    esp_err_t ret = w.last_err;
+    heap_caps_free(w.buf);
+    return ret;
+}
+
+
+
+/* ------------------------------ Sysinfo init function ------------------------------ */
 
 void mn_sysinfo_init(void)
 {

@@ -99,18 +99,62 @@ static std::string subst(const MnConfig& cfg, const std::string& var) {
     return {};
 }
 
-static std::string render_with_vars(const char* tpl, const MnConfig& cfg) {
-    std::string s(tpl);
-    size_t p=0;
-    while ((p=s.find('%', p))!=std::string::npos) {
-        size_t q = s.find('%', p+1);
-        if (q==std::string::npos) break;
-        std::string key = s.substr(p+1, q-p-1);
-        auto val = subst(cfg, key);
-        s.replace(p, (q-p+1), val);
-        p += val.size();
+static esp_err_t render_with_vars_chunked(httpd_req_t* req, const char* tpl, const MnConfig& cfg) {
+    // Send HTML template with %VAR% substitutions without building a full std::string in RAM.
+    // Uses chunked transfer: httpd_resp_send_chunk().
+    if (!tpl) {
+        return httpd_resp_send(req, "", 0);
     }
-    return s;
+
+    esp_err_t err = ESP_OK;
+
+    auto send_chunk = [&](const char* p, size_t n) -> esp_err_t {
+        if (n == 0) return ESP_OK;
+        return httpd_resp_send_chunk(req, p, n);
+    };
+
+    const char* p = tpl;
+    const char* seg = tpl;
+
+    // Reuse a small key buffer to reduce heap churn
+    std::string key;
+    key.reserve(32);
+
+    while (*p) {
+        if (*p != '%') { ++p; continue; }
+
+        // Send everything before '%'
+        err = send_chunk(seg, (size_t)(p - seg));
+        if (err != ESP_OK) return err;
+
+        const char* q = strchr(p + 1, '%');
+        if (!q) {
+            // No closing '%': send the rest as-is and finish.
+            err = send_chunk(p, strlen(p));
+            if (err != ESP_OK) return err;
+            seg = p + strlen(p);
+            break;
+        }
+
+        // Extract key between %...%
+        key.assign(p + 1, (size_t)(q - (p + 1)));
+        std::string val = subst(cfg, key);
+
+        // Send substitution value
+        err = send_chunk(val.c_str(), val.size());
+        if (err != ESP_OK) return err;
+
+        // Continue after closing '%'
+        p = q + 1;
+        seg = p;
+    }
+
+    // Send remaining tail (if any)
+    err = send_chunk(seg, strlen(seg));
+    if (err != ESP_OK) return err;
+
+    // Final empty chunk = end of response
+    return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 static esp_err_t send_text(httpd_req_t* req, const std::string& body, const char* mime) {
@@ -173,9 +217,11 @@ bool MnWeb::check_auth(httpd_req_t* req) const {
 static esp_err_t handle_root(httpd_req_t* req) {
     auto* self = (MnWeb*) req->user_ctx;
     if (!check_basic_auth(req, self->config())) return ESP_OK;
-    auto html = render_with_vars(HTML_ROOT, self->config());
-    return send_text(req, html, "text/html");
+
+    httpd_resp_set_type(req, "text/html");
+    return render_with_vars_chunked(req, HTML_ROOT, self->config());
 }
+
 
 static esp_err_t handle_css(httpd_req_t* req) {
     return send_text(req, HTML_CSS_STYLE, "text/css");
@@ -184,8 +230,9 @@ static esp_err_t handle_css(httpd_req_t* req) {
 static esp_err_t handle_module_cfg(httpd_req_t* req) {
     auto* self = (MnWeb*) req->user_ctx;
     if (!check_basic_auth(req, self->config())) return ESP_OK;
-    auto html = render_with_vars(HTML_MODULE_CONFIGURATION, self->config());
-    return send_text(req, html, "text/html");
+
+    httpd_resp_set_type(req, "text/html");
+    return render_with_vars_chunked(req, HTML_MODULE_CONFIGURATION, self->config());
 }
 
 // ---------------------------------------------------------------------------
@@ -287,38 +334,19 @@ static esp_err_t handle_query_wifi(httpd_req_t* req) {
         self->config().cfg.WifiConfig = 0xAAAA;
         self->config().save();
 
-        auto html = render_with_vars(HTML_PUSH_CONFIGURATION_TO_MODULE, self->config());
-        send_text(req, html, "text/html");
+        httpd_resp_set_type(req, "text/html");
+        render_with_vars_chunked(req, HTML_PUSH_CONFIGURATION_TO_MODULE, self->config());
 
         self->wifi().apply_new_cfg_and_test();  // reboot based on success/failure
     } else {
         // No Wi-Fi change: save only, no reboot
         self->config().save();
 
-        auto html = render_with_vars(HTML_PUSH_CONFIGURATION_TO_MODULE, self->config());
-        send_text(req, html, "text/html");
+        httpd_resp_set_type(req, "text/html");
+        render_with_vars_chunked(req, HTML_PUSH_CONFIGURATION_TO_MODULE, self->config());
     }
     return ESP_OK;
 }
-
-// ---------------------------------------------------------------------------
-// Sysinfo reset handler
-// ---------------------------------------------------------------------------
-#ifdef CONFIG_MINOS_SYSINFO_ENABLE
-static esp_err_t handle_sysinfo(httpd_req_t* req) {
-    auto* self = (MnWeb*) req->user_ctx;
-    if (!check_basic_auth(req, self->config())) return ESP_OK;
-
-    if (!mn_sysinfo_is_enabled()) {
-        httpd_resp_set_status(req, "302 Found");
-        httpd_resp_set_hdr(req, "Location", "/");
-        return httpd_resp_send(req, NULL, 0);
-    }
-
-    auto html = render_with_vars(HTML_SYSINFO, self->config());
-    return send_text(req, html, "text/html");
-}
-#endif
 
 // ---------------------------------------------------------------------------
 // Factory reset handler
@@ -361,10 +389,62 @@ static esp_err_t handle_example(httpd_req_t* req) {
     auto* self = (MnWeb*) req->user_ctx;
     if (!check_basic_auth(req, self->config())) return ESP_OK;
 
-    // Rendre le template en remplaçant les %...% puis envoyer la réponse
-    auto html = render_with_vars(HTML_EXEMPLE, self->config());
-    return send_text(req, html, "text/html");
+    httpd_resp_set_type(req, "text/html");
+    return render_with_vars_chunked(req, HTML_EXEMPLE, self->config());
 }
+
+// ---------------------------------------------------------------------------
+// Handler de la page Sysinfo
+// ---------------------------------------------------------------------------
+#ifdef CONFIG_MINOS_SYSINFO_ENABLE
+
+static esp_err_t sysinfo_httpd_writer(void* ctx, const char* data, size_t len) {
+    httpd_req_t* req = (httpd_req_t*)ctx;
+    return httpd_resp_send_chunk(req, data, len);
+}
+
+static esp_err_t handle_sysinfo(httpd_req_t* req) {
+    auto* self = (MnWeb*) req->user_ctx;
+    if (!check_basic_auth(req, self->config())) return ESP_OK;
+
+    httpd_resp_set_type(req, "text/html");
+
+    // Minimal page skeleton (no big template)
+    static const char HEAD[] =
+        "<!DOCTYPE html><html><head>"
+        "<meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>System infos</title>"
+        "<link rel='stylesheet' href='styles.css'>"
+        "</head><body>"
+        "<h1>System infos</h1>"
+        "<div>";
+
+    static const char TAIL[] =
+        "</div>"
+        "<p><a class='button' href='/'>Back</a></p>"
+        "</body></html>";
+
+    esp_err_t err = httpd_resp_send_chunk(req, HEAD, strlen(HEAD));
+    if (err != ESP_OK) return err;
+
+    // Stream the body chunks
+    err = mn_sysinfo_stream_body_html(req, sysinfo_httpd_writer);
+    if (err != ESP_OK) {
+        // best effort: send an error note
+        const char* msg = "<p>sysinfo streaming failed.</p>";
+        httpd_resp_send_chunk(req, msg, strlen(msg));
+    }
+
+    err = httpd_resp_send_chunk(req, TAIL, strlen(TAIL));
+    if (err != ESP_OK) return err;
+
+    // End chunked response
+    return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+#endif
+
 
 MnWeb::MnWeb(MnConfig& c, MnWiFi& w, MnTime& t, MnOta& o) : m_cfg(c), m_wifi(w), m_time(t), m_ota(o) {}
 
@@ -388,7 +468,7 @@ esp_err_t MnWeb::begin() {
     ssl.httpd = HTTPD_DEFAULT_CONFIG();
     ssl.httpd.uri_match_fn      = httpd_uri_match_wildcard;
     ssl.httpd.server_port       = 443;
-    ssl.httpd.max_open_sockets  = 2;
+    ssl.httpd.max_open_sockets  = 4;
     ssl.httpd.lru_purge_enable  = true;
     ssl.httpd.max_uri_handlers  = 16;
 
@@ -410,9 +490,9 @@ esp_err_t MnWeb::begin() {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn      = httpd_uri_match_wildcard;
     cfg.server_port       = 80;
-    cfg.max_open_sockets  = 2;
+    cfg.max_open_sockets  = 4;
     cfg.lru_purge_enable  = true;
-    cfg.max_uri_handlers  = 12;
+    cfg.max_uri_handlers  = 16;
 
     cfg.recv_wait_timeout = 20;
     cfg.send_wait_timeout = 20;
