@@ -595,8 +595,8 @@ char* mn_sysinfo_build_body_html(void) {
         return out;
     }
 
-    //mn_strbuf_t sb = {0}; //Can eat a lot of memory.
-    mn_strbuf_t sb;
+    // Must start zeroed: sb_reserve() reallocs sb.buf, so garbage here corrupts the heap.
+    mn_strbuf_t sb = {0};
     sb_reserve(&sb, 4096);
 
     // Chip info
@@ -630,6 +630,8 @@ char* mn_sysinfo_build_body_html(void) {
     sb_appendf(&sb, "Current core: %d\n", core);
     sb_appendf(&sb, "Uptime: %u day%s %02u:%02u:%02u (%" PRId64 " us)\n",
                days, (days > 1) ? "s" : "", hours, minutes, seconds, us);
+    sb_appendf(&sb, "Last reset reason: %s\n",
+               mn_sysinfo_reset_reason_str(esp_reset_reason()));
     sb_appendf(&sb, "Heap free: %u bytes\n", (unsigned)heap_free);
     sb_appendf(&sb, "Heap min free: %u bytes\n", (unsigned)heap_min);
     sb_appendf(&sb, "Largest free block: %u bytes\n", (unsigned)heap_big);
@@ -933,6 +935,8 @@ esp_err_t mn_sysinfo_stream_body_html(void* ctx, mn_sysinfo_write_cb_t write_cb)
     sbw_appendf(&w, "Current core: %d\n", core);
     sbw_appendf(&w, "Uptime: %u day%s %02u:%02u:%02u (%" PRId64 " us)\n",
                 days, (days > 1) ? "s" : "", hours, minutes, seconds, us);
+    sbw_appendf(&w, "Last reset reason: %s\n",
+                mn_sysinfo_reset_reason_str(esp_reset_reason()));
     sbw_appendf(&w, "Heap free: %u bytes\n", (unsigned)heap_free);
     sbw_appendf(&w, "Heap min free: %u bytes\n", (unsigned)heap_min);
     sbw_appendf(&w, "Largest free block: %u bytes\n", (unsigned)heap_big);

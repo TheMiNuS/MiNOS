@@ -8,9 +8,11 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/event_groups.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <atomic>
 #include <cstring>
 
 static const char* TAG = "MnWiFi";
@@ -18,18 +20,43 @@ static const char* TAG = "MnWiFi";
 static EventGroupHandle_t wifi_evt;
 static const int GOT_IP_BIT = BIT0;
 
+// Reconnect is only wanted while the STA driver is meant to be running. It is cleared
+// before any intentional stop/mode change so our own reconfiguration does not trigger retries.
+static std::atomic<bool> s_sta_auto_reconnect{false};
+static std::atomic<int64_t> s_last_connect_attempt_us{0};
+static constexpr int64_t RECONNECT_FALLBACK_US = 30LL * 1000 * 1000;
+
+static void request_sta_connect(const char* why) {
+    s_last_connect_attempt_us.store(esp_timer_get_time());
+    const esp_err_t err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Wi-Fi connect request (%s) failed: %s", why, esp_err_to_name(err));
+    }
+}
+
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                int32_t event_id, void* event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        request_sta_connect("initial");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(wifi_evt, GOT_IP_BIT);
+        if (wifi_evt) xEventGroupClearBits(wifi_evt, GOT_IP_BIT);
+        const auto* info = static_cast<const wifi_event_sta_disconnected_t*>(event_data);
+        const bool reconnect = s_sta_auto_reconnect.load();
+        ESP_LOGW(TAG, "STA disconnected (reason=%d)%s",
+                 info ? static_cast<int>(info->reason) : -1,
+                 reconnect ? "; reconnecting" : "");
+        if (reconnect) request_sta_connect("after disconnect");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-        xEventGroupSetBits(wifi_evt, GOT_IP_BIT);
+        if (wifi_evt) xEventGroupSetBits(wifi_evt, GOT_IP_BIT);
+        const auto* info = static_cast<const ip_event_got_ip_t*>(event_data);
+        if (info) {
+            ESP_LOGI(TAG, "STA got IP " IPSTR, IP2STR(&info->ip_info.ip));
+        }
     }
 }
 
 esp_err_t MnWiFi::start_ap() {
+    s_sta_auto_reconnect.store(false);
     esp_netif_create_default_wifi_ap();
     wifi_init_config_t cfg_wifi = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg_wifi));
@@ -52,6 +79,7 @@ esp_err_t MnWiFi::start_sta(const char* ssid, const char* pass, int timeout_ms, 
     xEventGroupClearBits(wifi_evt, GOT_IP_BIT);
 
     // Stop/deinit in case an AP was already running (e.g., after a web reconfiguration)
+    s_sta_auto_reconnect.store(false);
     esp_wifi_stop();
     esp_wifi_deinit();
 
@@ -69,9 +97,14 @@ esp_err_t MnWiFi::start_sta(const char* ssid, const char* pass, int timeout_ms, 
     wifi_init_config_t cfg_wifi = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg_wifi));
 
-    // Register Wi-Fi/IP event handlers
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+    // Register Wi-Fi/IP event handlers once; start_sta() may run again from /wifi,
+    // and duplicate registrations would fire every event (and reconnect) twice.
+    static bool handlers_registered = false;
+    if (!handlers_registered) {
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+        handlers_registered = true;
+    }
 
     wifi_config_t sta; memset(&sta, 0, sizeof(sta));
     strncpy((char*)sta.sta.ssid, ssid, sizeof(sta.sta.ssid) - 1);
@@ -82,6 +115,7 @@ esp_err_t MnWiFi::start_sta(const char* ssid, const char* pass, int timeout_ms, 
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
+    s_sta_auto_reconnect.store(true);
     ESP_ERROR_CHECK(esp_wifi_start());
 
     ESP_LOGI(TAG, "STA trying SSID '%s' (pwd_len=%d)", (char*)sta.sta.ssid, (int)strlen((char*)sta.sta.password));
@@ -136,7 +170,17 @@ void MnWiFi::reboot() {
 }
 
 void MnWiFi::maintain() {
-    // Optional: add periodic Wi‑Fi health checks here
+    if (!s_sta_auto_reconnect.load() || !wifi_evt) return;
+
+    sta_connected_ = (xEventGroupGetBits(wifi_evt) & GOT_IP_BIT) != 0;
+    if (sta_connected_) return;
+
+    // Fallback for cases where the disconnect-driven retry failed or the driver went idle.
+    const int64_t now_us = esp_timer_get_time();
+    if (now_us - s_last_connect_attempt_us.load() >= RECONNECT_FALLBACK_US) {
+        ESP_LOGW(TAG, "STA still without IP; retrying connection");
+        request_sta_connect("maintain");
+    }
 }
 
 esp_err_t MnWiFi::apply_new_cfg_and_test() {

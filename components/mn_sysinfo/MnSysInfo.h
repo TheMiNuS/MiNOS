@@ -7,10 +7,36 @@
 
 #include <stdbool.h>
 #include "esp_err.h"
+#include "esp_system.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** Human-readable name of an esp_reset_reason() value. Header-only so it is usable
+ *  even when CONFIG_MINOS_SYSINFO_ENABLE is off. */
+static inline const char* mn_sysinfo_reset_reason_str(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_POWERON:   return "power-on";
+        case ESP_RST_EXT:       return "external pin";
+        case ESP_RST_SW:        return "software restart";
+        case ESP_RST_PANIC:     return "panic/exception";
+        case ESP_RST_INT_WDT:   return "interrupt watchdog";
+        case ESP_RST_TASK_WDT:  return "task watchdog";
+        case ESP_RST_WDT:       return "other watchdog";
+        case ESP_RST_DEEPSLEEP: return "deep-sleep wakeup";
+        case ESP_RST_BROWNOUT:  return "brownout";
+        case ESP_RST_SDIO:      return "SDIO";
+        default:                return "unknown";
+    }
+}
+
+/** True for reset reasons that indicate a crash or power problem. */
+static inline bool mn_sysinfo_reset_reason_is_fault(esp_reset_reason_t reason) {
+    return reason == ESP_RST_PANIC || reason == ESP_RST_INT_WDT ||
+           reason == ESP_RST_TASK_WDT || reason == ESP_RST_WDT ||
+           reason == ESP_RST_BROWNOUT;
+}
 
 /**
  * Runtime enable switch (in addition to Kconfig).

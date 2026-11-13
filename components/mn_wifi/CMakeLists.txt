@@ -5,4 +5,4 @@
 #
 idf_component_register(SRCS "MnWiFi.cpp"
                        INCLUDE_DIRS "."
-                       REQUIRES esp_wifi esp_event esp_netif mn_cfg)
+                       REQUIRES esp_wifi esp_event esp_netif esp_timer mn_cfg)
